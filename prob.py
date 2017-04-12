@@ -1,21 +1,53 @@
 from math import exp
+from array import array
+
 import numpy as np
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import shortest_path
 
 import pyximport;  # @UnresolvedImport
 pyximport.install(setup_args={"include_dirs": np.get_include()}, reload_support=True)  
 
-import demand, util  # @UnresolvedImport
+import demand  # @UnresolvedImport
 
 
-def ex_grid(intensity=0.5, H=9*60, debug=False):
+"""
+Problem specification:
+  For specifying problem instances, not only actual demand (e_r, i_r, and j_r)
+  but
+also demand matrix, d_ij, is provided because some algorithms, such as SV, use it.
+For other algorithms, it is sufficient to provide only actual demand.
+
+  - nS: number of stations
+    * Station i = 0, 1, ..., (nS - 1)
+  - t[i][j]: trip time from station i to station j (trip time table)
+
+  - nK: number of vehicles (fleet size)
+    * vehicle k = 0, 1, ..., (nK - 1)
+  - d0[k]: (initial) last station that vehicle k was assigned to visit
+  - a0[k]: (initial) arrival time of k to d0[k]
+    * These are d_k and a_k in the paper. '0' is used to specify they are initial
+      values at the problem instance.
+
+  - nD: number of requests (passenger demand)
+    * Request r = 0, 1, ..., (nD - 1)
+    * NOTE nR is reserved for SV algorithm. 
+  - m[i][j]: rate of travel requests from station i to station j (demand matrix)
+    * NOTE In the paper, it is d_ij but it conflicts with d_k. Hence, we use this.
+  - e[r]: time at which the system receives r
+  - u[r]: origin station of r
+  - v[r]: destination station of r
+    * In the paper, i_r and j_r are used but we use u and v to reserve i and j
+      for index variables.
+"""
+
+
+def ex_grid(intensity=0.5, H=9*60*60, debug=False):
     """
-    Problem specification:
-    Here we use the same notation as ex1().
-    
-    p. 50 ~ 51 of Lees-Miller, 2011
-    The number of station is change to 24.  
-    The distance of each line in grid_network is 800m.
-    The fleet size is set at 200 vehicles and the speed of vehicles is 10m/s. So the travel time on each line is 1.33min.
+    Grid network in p. 51 of Lees-Miller (2011
+      The distance of each line in grid_network is 800m. The fleet size is set
+      as 200 vehicles and the speed of vehicles is 10m/s. So the travel time on
+      each line is 1.33 min.
     
     H: time horizon (sec)
     """
@@ -32,17 +64,13 @@ def ex_grid(intensity=0.5, H=9*60, debug=False):
         (20,  6, 80), (20, 16, 80), (21,  9, 80), (22,  8, 80), (22, 18, 80),
         (23, 11, 80)
     ]
-    t = util.build_trip_time_table(nS, ET)
+    t = shortest_path(coo_matrix((lambda I,J,T: (T,(I,J)))(*zip(*ET))).toarray())
     
     # Vehicles
     nK = 200
-    d0 = np.array([(k % nS) for k in range(nK)])
-    a0 = np.repeat(0.0, nK)
+    d0, a0 = [(k % nS) for k in range(nK)], [0] * nK
     
     # Demand
-    MODIFIER_CONSIDERING_INTENSITY_AND_MIN = 2035/3600
-    nD = int(round(H * intensity * MODIFIER_CONSIDERING_INTENSITY_AND_MIN))
-    JAR = [(3600, MODIFIER_CONSIDERING_INTENSITY_AND_MIN * intensity)]
     
     inflow  = [0.05 , 0.05, 0.05, 0.0375, 0.025 , 0.0375, 0.0375, 0.025, 0.0375,
                0.05 , 0.05, 0.05, 0.05  , 0.0375, 0.0375, 0.05  , 0.05  , 0.025,
@@ -57,7 +85,6 @@ def ex_grid(intensity=0.5, H=9*60, debug=False):
     # m = generate_OD_matrix(nS, inflow, outflow, t, th)
     #
     # From https://github.com/jdleesmiller/si_taxi/ext/si_taxi_test/si_taxi_test.cpp
-    #
     m = [[0,0.000574,9.72e-05,0.00125,0.000421,0.000236,4.76e-05,0.00209,0.000253,1.96e-05,4.73e-06,6.22e-06,4.37e-05,0.0026,0.000114,6.86e-05,1.05e-05,0.00464,0.000937,5.21e-05,1.39e-05,0.000562,2.14e-05,8.81e-06],
          [1.23e-05,0,0.000951,0.000499,0.00412,0.00231,1.9e-05,0.000832,0.000101,7.83e-06,4.63e-05,6.09e-05,1.74e-05,4.23e-05,0.00111,0.000672,4.2e-06,0.00185,0.000374,0.00051,5.53e-06,0.000224,0.000209,8.63e-05],
          [1.32e-05,1e-05,0,0.000535,0.00442,0.00247,2.04e-05,0.000892,0.000108,8.39e-06,4.96e-05,6.53e-05,1.87e-05,4.53e-05,0.00119,0.00072,4.5e-06,0.00199,0.000401,0.000546,5.92e-06,0.00024,0.000224,9.25e-05],
@@ -82,13 +109,15 @@ def ex_grid(intensity=0.5, H=9*60, debug=False):
          [4.96e-05,3.76e-05,6.37e-06,8.2e-05,0.000677,1.55e-05,0.00188,0.00335,0.000406,0.000774,7.6e-06,1e-05,7.02e-05,0.00017,0.000183,4.5e-06,0.000415,0.000304,0.00151,3.41e-06,0.000547,0,3.44e-05,1.42e-05],
          [6.25e-06,4.74e-06,1.97e-05,0.000254,0.00209,4.78e-05,9.65e-06,0.000423,0.00126,3.97e-06,2.35e-05,3.09e-05,8.85e-06,2.15e-05,0.000564,1.39e-05,2.13e-06,0.000941,0.00466,1.06e-05,2.81e-06,0.000114,0,4.38e-05],
          [5.92e-06,4.5e-06,1.87e-05,0.00024,0.00199,4.53e-05,0.000224,0.000401,0.00119,9.25e-05,0.000546,0.00072,8.39e-06,2.04e-05,0.000535,1.32e-05,4.96e-05,0.000892,0.00442,1e-05,6.53e-05,0.000108,0.00247,0]]
-    
     assert all(m[i][i] == 0 for i in range(len(m)))
-    ODM = demand.od_matrix(list(range(len(m))), m, JAR)
-    e, u, v = zip(*[ODM.next_arrival() for _ in range(nD)])
-    e, u, v = np.array(e, float), np.array(u, int), np.array(v, int)  # to np.array
     
-    # Demand validation
+    MODIFIER_CONSIDERING_INTENSITY_AND_MIN = 2035/3600
+    ODM = demand.od_matrix(m, MODIFIER_CONSIDERING_INTENSITY_AND_MIN * intensity)
+    e, u, v = ODM.next_arrivals_in_interval(H)
+    assert len(e) == len(u) == len(v)
+    nD = len(e)
+    
+    # Demand check
     if debug:
         N = [0] * nS
         for i in u:
@@ -102,13 +131,13 @@ def ex_grid(intensity=0.5, H=9*60, debug=False):
         for i in range(nS):
             print('%.03f %.03f' % (outflow[i], N[i] / nD))
     
-    return nS, t, nK, d0, a0, nD, e, u, v, ODM
+    return nS, t, nK, array('i', d0), array('d', a0), nD, e, u, v, ODM
 
 
 def generate_OD_matrix(nS, inflow, outflow, t, th=0.01):
     """
     Generate OD matrix based on standard gravity model (Chakroborty & Das, 2003).
-      Numerical calculation has been done based on �엫�슜�깮 (2010).
+      Numerical calculation has been done based on Lim (2010).
     
     nS: number of stations
     inflow[k]: ratio of input flow of station k
@@ -117,9 +146,10 @@ def generate_OD_matrix(nS, inflow, outflow, t, th=0.01):
     th (theta): model parameter
     
     References:
-      - Chakroborty and Das (2003). Principles of transportation
-        engineering. Prentice Hall of India.
-      - �엫�슜�깮 (2010). 洹좏삎 �넻�뻾遺꾪룷紐⑦삎�뿰援�, ���븳援먰넻�븰�쉶吏�, 28沅�, 6�샇.
+      - Chakroborty and Das (2003). Principles of transportation engineering,
+        Prentice Hall of India.
+      - Lim (2010). Equilibrium trip distribution model, J. Korean Soc. Transp.,
+        Vol. 28, No. 6.
     """
     
     EPSILON = 0.00001
@@ -162,17 +192,17 @@ def generate_OD_matrix(nS, inflow, outflow, t, th=0.01):
                     a_sum += b[j] * outflow[j] * exp(-th * t[i][j])
             a[i] = (a_sum)**-1        
     
-    m = [[(x * a[i] * y * b[j] * exp(-th*t[i][j]) if i != j else 0) for (j, y) in enumerate(outflow)]
-                                                    for (i, x) in enumerate(inflow)]
-
+    m = [[(x * a[i] * y * b[j] * exp(-th*t[i][j]) if i != j else 0) for (j, y)
+          in enumerate(outflow)] for (i, x) in enumerate(inflow)]
+    
     return m
 
 
 if __name__ == '__main__':
     nS, t, nK, d0, a0, nD, e, u, v, ODM = ex_grid(0.5, 100 * 60 * 60, True)
-    print(d0)
-    print(a0)
-    print(e)
-    print(u)
-    print(v)
+    print(type(d0))
+    print(type(a0))
+    print(type(e))
+    print(type(u))
+    print(type(v))
     print('nD =', nD)
